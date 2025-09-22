@@ -4,13 +4,18 @@ Main FastAPI application entry point
 """
 
 from fastapi import FastAPI, HTTPException
+import logging
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 import os
 from pathlib import Path
 
-from app.api.endpoints import documents, search, health
+from app.routers import documents as documents_router
 from app.core.config import settings
+from app.database import Base, engine
+
+# Logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(name)s - %(message)s')
 
 # Create FastAPI app
 app = FastAPI(
@@ -30,10 +35,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# DB init
+@app.on_event("startup")
+def on_startup():
+    Base.metadata.create_all(bind=engine)
+
 # Include API routes
-app.include_router(health.router, prefix="/api/v1", tags=["health"])
-app.include_router(documents.router, prefix="/api/v1", tags=["documents"])
-app.include_router(search.router, prefix="/api/v1", tags=["search"])
+app.include_router(documents_router.router, prefix="/api/v1")
 
 # Mount static files for uploaded documents
 uploads_dir = Path("data/uploads")
