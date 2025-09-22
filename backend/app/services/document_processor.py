@@ -12,7 +12,7 @@ from app.core.config import settings
 from app.services.text_processor import text_processor
 from app.services.embedding_service import embedding_service
 from app.services.vector_store import vector_store
-from app.models.document import Document, DocumentChunk, DocumentStatus
+from app.models.document import Document, DocumentChunk, DocumentStatus, ProcessingStatus
 
 logger = logging.getLogger(__name__)
 
@@ -54,15 +54,18 @@ class DocumentProcessor:
         
         try:
             # Update status to processing
-            document.status = DocumentStatus.PROCESSING
+            document.processing_status = ProcessingStatus.PROCESSING
             document.processing_error = None
             
             file_path = Path(document.file_path)
             
             logger.info(f"Starting processing of document: {document.filename}")
             
+            # Determine mime type from content_type
+            mime_type = f"application/{document.content_type}"
+            
             # Step 1: Extract text from document
-            text_data = await text_processor.process_document(file_path, document.mime_type)
+            text_data = await text_processor.process_document(file_path, mime_type)
             
             # Store extracted text in document
             document.extracted_text = text_data["full_text"]
@@ -78,8 +81,8 @@ class DocumentProcessor:
             # This could be done in parallel with vector storage
             
             # Update document status
-            document.status = DocumentStatus.PROCESSED
-            document.processed_at = datetime.now()
+            document.processing_status = ProcessingStatus.COMPLETED
+            document.last_modified = datetime.now()
             
             processing_time = (datetime.now() - start_time).total_seconds()
             
@@ -98,9 +101,9 @@ class DocumentProcessor:
             
         except Exception as e:
             # Update document status to failed
-            document.status = DocumentStatus.FAILED
+            document.processing_status = ProcessingStatus.FAILED
             document.processing_error = str(e)
-            document.processed_at = datetime.now()
+            document.last_modified = datetime.now()
             
             processing_time = (datetime.now() - start_time).total_seconds()
             
@@ -300,3 +303,87 @@ class DocumentProcessor:
 
 # Global instance
 document_processor = DocumentProcessor()
+
+# API compatibility functions
+def validate_pdf(file_path: Path, max_size: int) -> tuple[bool, str]:
+    """
+    Validate PDF file for processing
+    
+    Args:
+        file_path: Path to the PDF file
+        max_size: Maximum file size in bytes
+        
+    Returns:
+        Tuple of (is_valid, reason)
+    """
+    try:
+        # Check if file exists
+        if not file_path.exists():
+            return False, "File does not exist"
+        
+        # Check file size
+        file_size = file_path.stat().st_size
+        if file_size > max_size:
+            return False, f"File size ({file_size} bytes) exceeds maximum allowed size ({max_size} bytes)"
+        
+        if file_size == 0:
+            return False, "File is empty"
+        
+        # Quick PDF validation
+        try:
+            with open(file_path, 'rb') as f:
+                first_bytes = f.read(8)
+                if not first_bytes.startswith(b'%PDF'):
+                    return False, "File does not appear to be a valid PDF"
+        except Exception as e:
+            return False, f"Could not validate PDF structure: {e}"
+        
+        return True, "Valid PDF"
+        
+    except Exception as e:
+        return False, f"Validation error: {e}"
+
+async def process_pdf(db, file_path: Path):
+    """
+    Process PDF file in background task
+    
+    Args:
+        db: Database session
+        file_path: Path to the PDF file
+    """
+    try:
+        # Find document in database
+        document = db.query(Document).filter(Document.file_path == str(file_path)).first()
+        if not document:
+            logger.error(f"Document not found for file: {file_path}")
+            return
+        
+        # Update status to processing
+        document.processing_status = ProcessingStatus.PROCESSING
+        db.commit()
+        
+        # Process the document using our ML pipeline
+        result = await document_processor.process_document(document)
+        
+        if result["success"]:
+            document.processing_status = ProcessingStatus.COMPLETED
+            document.processed_size = len(document.extracted_text) if document.extracted_text else 0
+            document.num_pages = result.get("metadata", {}).get("num_pages", 0)
+            logger.info(f"Document {document.id} processed successfully")
+        else:
+            document.processing_status = ProcessingStatus.FAILED
+            document.processing_error = result.get("error", "Unknown error")
+            logger.error(f"Document {document.id} processing failed: {result.get('error')}")
+        
+        db.commit()
+        
+    except Exception as e:
+        logger.error(f"Background PDF processing failed for {file_path}: {e}")
+        try:
+            document = db.query(Document).filter(Document.file_path == str(file_path)).first()
+            if document:
+                document.processing_status = ProcessingStatus.FAILED
+                document.processing_error = str(e)
+                db.commit()
+        except Exception as commit_error:
+            logger.error(f"Failed to update document status: {commit_error}")

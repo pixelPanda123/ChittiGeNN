@@ -26,30 +26,46 @@ class DocumentStatus(str, Enum):
     PROCESSED = "processed"
     FAILED = "failed"
 
+class ProcessingStatus(str, Enum):
+    """Processing status for API compatibility"""
+    PENDING = "pending"
+    PROCESSING = "processing"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+class ContentType(str, Enum):
+    """Content type for API compatibility"""
+    PDF = "pdf"
+    IMAGE = "image"
+    AUDIO = "audio"
+
 class Document(Base):
     """Document database model"""
     __tablename__ = "documents"
     
     id = Column(Integer, primary_key=True, index=True)
     filename = Column(String(255), nullable=False)
-    original_filename = Column(String(255), nullable=False)
     file_path = Column(String(500), nullable=False)
-    file_type = Column(String(50), nullable=False)
-    file_size = Column(Integer, nullable=False)
-    mime_type = Column(String(100), nullable=False)
+    content_type = Column(String(50), nullable=False)  # PDF, IMAGE, AUDIO
+    original_size = Column(Integer, nullable=False)
+    processed_size = Column(Integer, nullable=True)
     
     # Processing status
-    status = Column(String(50), default=DocumentStatus.UPLOADED)
+    processing_status = Column(String(50), default=ProcessingStatus.PENDING)
     processing_error = Column(Text, nullable=True)
     
-    # Extracted content
+    # Timestamps
+    creation_date = Column(DateTime(timezone=True), nullable=True)
+    ingestion_date = Column(DateTime(timezone=True), server_default=func.now())
+    last_modified = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    
+    # Additional fields for ML processing
+    checksum = Column(String(255), nullable=True)
+    num_pages = Column(Integer, nullable=True)
+    
+    # Extracted content (for ML pipeline)
     extracted_text = Column(Text, nullable=True)
     metadata = Column(Text, nullable=True)  # JSON string
-    
-    # Timestamps
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-    processed_at = Column(DateTime(timezone=True), nullable=True)
     
     # Relationship
     chunks = relationship("DocumentChunk", back_populates="document", cascade="all, delete-orphan")
