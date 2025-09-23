@@ -5,15 +5,18 @@ python-multipart==0.0.6
 
 # Database & Storage
 sqlalchemy==2.0.23
-sqlite-utils==3.37.3
+sqlite-utils==3.37
 pydantic==2.5.0
+pydantic-settings==2.0.3
 
 # ML & AI Models
 sentence-transformers==2.2.2
 transformers==4.35.2
-torch==2.1.0
-numpy==1.24.3
+torch==2.4.0
+numpy>=1.26,<2
 scikit-learn==1.3.2
+pydantic-settings>=2.0,<3.0
+
 
 # Document Processing
 PyMuPDF==1.24.10

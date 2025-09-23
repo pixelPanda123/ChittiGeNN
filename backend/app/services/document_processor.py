@@ -9,111 +9,57 @@ import asyncio
 from datetime import datetime
 
 from app.core.config import settings
-from app.services.text_processor import text_processor
-from app.services.embedding_service import embedding_service
-from app.services.vector_store import vector_store
-from app.models.document import Document, DocumentChunk, DocumentStatus, ProcessingStatus
+from sqlalchemy.orm import Session
+from app.database.connection import SessionLocal
+import fitz  # PyMuPDF
+from app.models.document import Document, ContentChunk, ProcessingStatus, ContentType
 
 logger = logging.getLogger(__name__)
 
 class DocumentProcessor:
-    """Main service for processing documents through the entire pipeline"""
-    
-    def __init__(self):
-        self.initialized = False
-        
-    async def initialize(self) -> None:
-        """Initialize all required services"""
-        try:
-            await vector_store.initialize()
-            await embedding_service.load_model()
-            self.initialized = True
-            logger.info("Document processor initialized successfully")
-        except Exception as e:
-            logger.error(f"Failed to initialize document processor: {e}")
-            raise
-    
+    """Minimal processor: extract text via PyMuPDF and chunk per page"""
+
     async def process_document(self, document: Document) -> Dict[str, Any]:
-        """
-        Process a document through the entire pipeline:
-        1. Extract text
-        2. Create chunks
-        3. Generate embeddings
-        4. Store in vector database
-        
-        Args:
-            document: Document database model
-            
-        Returns:
-            Processing result with statistics
-        """
-        if not self.initialized:
-            await self.initialize()
-        
         start_time = datetime.now()
-        
+        file_path = Path(document.file_path)
         try:
-            # Update status to processing
-            document.processing_status = ProcessingStatus.PROCESSING
-            document.processing_error = None
-            
-            file_path = Path(document.file_path)
-            
-            logger.info(f"Starting processing of document: {document.filename}")
-            
-            # Determine mime type from content_type
-            mime_type = f"application/{document.content_type}"
-            
-            # Step 1: Extract text from document
-            text_data = await text_processor.process_document(file_path, mime_type)
-            
-            # Store extracted text in document
-            document.extracted_text = text_data["full_text"]
-            document.metadata = str(text_data["metadata"])  # Store as JSON string
-            
-            # Step 2: Process chunks with embeddings
-            processed_chunks = await embedding_service.process_document_chunks(text_data["chunks"])
-            
-            # Step 3: Store in vector database
-            chunk_ids = await vector_store.add_document_chunks(str(document.id), processed_chunks)
-            
-            # Step 4: Store chunks in database (optional - for metadata tracking)
-            # This could be done in parallel with vector storage
-            
-            # Update document status
-            document.processing_status = ProcessingStatus.COMPLETED
-            document.last_modified = datetime.now()
-            
+            pages: List[tuple[int, str]] = []
+            full_text_parts: List[str] = []
+            with fitz.open(file_path) as pdf:
+                for i in range(pdf.page_count):
+                    page = pdf.load_page(i)
+                    text = page.get_text("text") or ""
+                    pages.append((i + 1, text))
+                    full_text_parts.append(text)
+
+            # simple chunking per page
+            chunks_created = 0
+            for page_num, text in pages:
+                text = (text or "").strip()
+                if not text:
+                    continue
+                chunk = ContentChunk(
+                    document_id=document.id,
+                    content_text=text,
+                    chunk_type="TEXT",
+                    page_number=page_num,
+                )
+                # session management handled by caller
+                chunks_created += 1
+
             processing_time = (datetime.now() - start_time).total_seconds()
-            
-            result = {
+            return {
                 "success": True,
                 "document_id": document.id,
-                "chunks_created": len(processed_chunks),
-                "chunk_ids": chunk_ids,
+                "chunks_created": chunks_created,
                 "processing_time_seconds": round(processing_time, 2),
-                "extracted_text_length": len(document.extracted_text),
-                "metadata": text_data["metadata"]
+                "metadata": {"num_pages": len(pages)},
             }
-            
-            logger.info(f"Successfully processed document {document.filename}: {len(processed_chunks)} chunks in {processing_time:.2f}s")
-            return result
-            
         except Exception as e:
-            # Update document status to failed
-            document.processing_status = ProcessingStatus.FAILED
-            document.processing_error = str(e)
-            document.last_modified = datetime.now()
-            
-            processing_time = (datetime.now() - start_time).total_seconds()
-            
-            logger.error(f"Failed to process document {document.filename}: {e}")
-            
             return {
                 "success": False,
                 "document_id": document.id,
                 "error": str(e),
-                "processing_time_seconds": round(processing_time, 2)
             }
     
     async def reprocess_document(self, document: Document) -> Dict[str, Any]:
@@ -343,47 +289,51 @@ def validate_pdf(file_path: Path, max_size: int) -> tuple[bool, str]:
     except Exception as e:
         return False, f"Validation error: {e}"
 
-async def process_pdf(db, file_path: Path):
-    """
-    Process PDF file in background task
-    
-    Args:
-        db: Database session
-        file_path: Path to the PDF file
-    """
+async def process_pdf(file_path: Path, document_id: int):
+    db = SessionLocal()
     try:
-        # Find document in database
-        document = db.query(Document).filter(Document.file_path == str(file_path)).first()
+        document = db.query(Document).get(document_id)
         if not document:
-            logger.error(f"Document not found for file: {file_path}")
+            logger.error(f"Document not found for id: {document_id}")
             return
-        
-        # Update status to processing
+
         document.processing_status = ProcessingStatus.PROCESSING
+        db.add(document)
         db.commit()
-        
-        # Process the document using our ML pipeline
+
         result = await document_processor.process_document(document)
-        
-        if result["success"]:
+
+        if result.get("success"):
+            with fitz.open(file_path) as pdf:
+                db.query(ContentChunk).filter(ContentChunk.document_id == document.id).delete()
+                total_len = 0
+                for i in range(pdf.page_count):
+                    text = (pdf.load_page(i).get_text("text") or "").strip()
+                    if not text:
+                        continue
+                    total_len += len(text)
+                    db.add(ContentChunk(
+                        document_id=document.id,
+                        content_text=text,
+                        chunk_type="TEXT",
+                        page_number=i+1,
+                    ))
             document.processing_status = ProcessingStatus.COMPLETED
-            document.processed_size = len(document.extracted_text) if document.extracted_text else 0
+            document.processed_size = total_len
             document.num_pages = result.get("metadata", {}).get("num_pages", 0)
-            logger.info(f"Document {document.id} processed successfully")
         else:
             document.processing_status = ProcessingStatus.FAILED
-            document.processing_error = result.get("error", "Unknown error")
-            logger.error(f"Document {document.id} processing failed: {result.get('error')}")
-        
+        db.add(document)
         db.commit()
-        
     except Exception as e:
         logger.error(f"Background PDF processing failed for {file_path}: {e}")
         try:
-            document = db.query(Document).filter(Document.file_path == str(file_path)).first()
+            document = db.query(Document).get(document_id)
             if document:
                 document.processing_status = ProcessingStatus.FAILED
-                document.processing_error = str(e)
+                db.add(document)
                 db.commit()
         except Exception as commit_error:
             logger.error(f"Failed to update document status: {commit_error}")
+    finally:
+        db.close()

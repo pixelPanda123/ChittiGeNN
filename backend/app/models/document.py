@@ -1,159 +1,33 @@
-"""
-Document models for ChittiGeNN
-"""
-
-from sqlalchemy import Column, Integer, String, DateTime, Text, Float, Boolean, ForeignKey, JSON
-from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy import Column, Integer, String, Text, ForeignKey, Enum
 from sqlalchemy.orm import relationship
-from sqlalchemy.sql import func
-from pydantic import BaseModel
-from typing import Optional, List
-from datetime import datetime
-from enum import Enum
+from app.core.database import Base
+import enum
 
-Base = declarative_base()
-
-class DocumentType(str, Enum):
-    """Supported document types"""
-    PDF = "pdf"
-    IMAGE = "image"
-    AUDIO = "audio"
-
-class DocumentStatus(str, Enum):
-    """Document processing status"""
-    UPLOADED = "uploaded"
-    PROCESSING = "processing"
+class ProcessingStatus(enum.Enum):
+    PENDING = "pending"
     PROCESSED = "processed"
     FAILED = "failed"
 
-class ProcessingStatus(str, Enum):
-    """Processing status for API compatibility"""
-    PENDING = "pending"
-    PROCESSING = "processing"
-    COMPLETED = "completed"
-    FAILED = "failed"
-
-class ContentType(str, Enum):
-    """Content type for API compatibility"""
+class ContentType(enum.Enum):
+    TEXT = "text"
     PDF = "pdf"
-    IMAGE = "image"
-    AUDIO = "audio"
+    DOCX = "docx"
 
 class Document(Base):
-    """Document database model"""
     __tablename__ = "documents"
-    
+
     id = Column(Integer, primary_key=True, index=True)
-    filename = Column(String(255), nullable=False)
-    file_path = Column(String(500), nullable=False)
-    content_type = Column(String(50), nullable=False)  # PDF, IMAGE, AUDIO
-    original_size = Column(Integer, nullable=False)
-    processed_size = Column(Integer, nullable=True)
-    
-    # Processing status
-    processing_status = Column(String(50), default=ProcessingStatus.PENDING)
-    processing_error = Column(Text, nullable=True)
-    
-    # Timestamps
-    creation_date = Column(DateTime(timezone=True), nullable=True)
-    ingestion_date = Column(DateTime(timezone=True), server_default=func.now())
-    last_modified = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
-    
-    # Additional fields for ML processing
-    checksum = Column(String(255), nullable=True)
-    num_pages = Column(Integer, nullable=True)
-    
-    # Extracted content (for ML pipeline)
-    extracted_text = Column(Text, nullable=True)
-    metadata = Column(Text, nullable=True)  # JSON string
-    
-    # Relationship
-    chunks = relationship("DocumentChunk", back_populates="document", cascade="all, delete-orphan")
+    title = Column(String, index=True)
+    status = Column(Enum(ProcessingStatus), default=ProcessingStatus.PENDING)
+    content_chunks = relationship("ContentChunk", back_populates="document")
 
-class DocumentChunk(Base):
-    """Document chunk for vector search"""
-    __tablename__ = "document_chunks"
-    
+
+class ContentChunk(Base):
+    __tablename__ = "content_chunks"
+
     id = Column(Integer, primary_key=True, index=True)
-    document_id = Column(Integer, ForeignKey("documents.id"), nullable=False, index=True)
-    chunk_index = Column(Integer, nullable=False)
-    content = Column(Text, nullable=False)
-    content_type = Column(String(50), nullable=False)  # text, image, audio
-    
-    # Vector embedding
-    embedding_id = Column(String(255), nullable=True)  # Reference to vector DB
-    embedding = Column(JSON, nullable=True)  # Store embedding as JSON array
-    
-    # Metadata
-    page_number = Column(Integer, nullable=True)
-    timestamp = Column(Float, nullable=True)  # For audio/video
-    confidence = Column(Float, nullable=True)  # For OCR/transcription
-    char_count = Column(Integer, nullable=False, default=0)
-    word_count = Column(Integer, nullable=False, default=0)
-    metadata = Column(JSON, nullable=True)  # Additional metadata as JSON
-    
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-    
-    # Relationship
-    document = relationship("Document", back_populates="chunks")
+    document_id = Column(Integer, ForeignKey("documents.id"))
+    content = Column(Text)
+    content_type = Column(Enum(ContentType), default=ContentType.TEXT)
 
-# Pydantic models for API
-class DocumentCreate(BaseModel):
-    """Document creation model"""
-    filename: str
-    file_type: DocumentType
-    file_size: int
-    mime_type: str
-
-class DocumentResponse(BaseModel):
-    """Document response model"""
-    id: int
-    filename: str
-    original_filename: str
-    file_type: str
-    file_size: int
-    mime_type: str
-    status: DocumentStatus
-    processing_error: Optional[str] = None
-    created_at: datetime
-    updated_at: Optional[datetime] = None
-    processed_at: Optional[datetime] = None
-    
-    class Config:
-        from_attributes = True
-
-class DocumentListResponse(BaseModel):
-    """Document list response model"""
-    documents: List[DocumentResponse]
-    total: int
-    page: int
-    page_size: int
-
-class DocumentChunkResponse(BaseModel):
-    """Document chunk response model"""
-    id: int
-    document_id: int
-    chunk_index: int
-    content: str
-    content_type: str
-    page_number: Optional[int] = None
-    timestamp: Optional[float] = None
-    confidence: Optional[float] = None
-    
-    class Config:
-        from_attributes = True
-
-class SearchResult(BaseModel):
-    """Search result model"""
-    chunk: DocumentChunkResponse
-    document: DocumentResponse
-    similarity_score: float
-    highlight: Optional[str] = None
-
-class SearchResponse(BaseModel):
-    """Search response model"""
-    query: str
-    results: List[SearchResult]
-    total_results: int
-    processing_time: float
+    document = relationship("Document", back_populates="content_chunks")
