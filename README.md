@@ -105,28 +105,7 @@ ChittiGeNN/
 - [ ] User management
 - [ ] Analytics dashboard
 
-## 🤝 Contributing
 
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add some amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
-
-## 📄 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## 🔒 Privacy & Security
-
-- All data processing happens locally
-- No external API calls after initial setup
-- No data leaves your machine
-- Open source and auditable
-
-## 📞 Support
-
-For support, email support@chittigenn.com or join our Discord community.
 
 ---
 
