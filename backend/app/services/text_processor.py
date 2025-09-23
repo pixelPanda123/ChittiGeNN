@@ -220,7 +220,7 @@ class TextProcessor:
         
         # Normalize quotes
         text = re.sub(r'["""]', '"', text)
-        text = re.sub(r'[''']', "'", text)
+        text = re.sub(r"['’]", "'", text)
         
         return text.strip()
     

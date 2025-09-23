@@ -3,30 +3,57 @@ ChittiGeNN - Offline Multimodal RAG System
 Main FastAPI application entry point
 """
 
-from fastapi import FastAPI, HTTPException
-import logging
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
-import os
 from pathlib import Path
+import logging
 
-from app.routers import documents as documents_router
-from app.core.config import settings
-from app.database import Base, engine
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
-# Logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(name)s - %(message)s')
+# -------------------------------------------------------------------
+# Simple settings (no pydantic required)
+# -------------------------------------------------------------------
+class Settings:
+    ALLOWED_ORIGINS = ["*"]  # allow all origins in development
 
-# Create FastAPI app
+settings = Settings()
+
+# -------------------------------------------------------------------
+# Lazy import routers to avoid circular imports
+# -------------------------------------------------------------------
+def get_routers():
+    from app.routers import documents, search, health
+    return documents.router, search.router, health.router
+
+# -------------------------------------------------------------------
+# Database imports
+# -------------------------------------------------------------------
+from app.database.base import Base
+from app.database.connection import engine
+
+# -------------------------------------------------------------------
+# Create the FastAPI app
+# -------------------------------------------------------------------
 app = FastAPI(
     title="ChittiGeNN API",
     description="Offline Multimodal RAG System for Document Intelligence",
     version="0.1.0",
     docs_url="/api/docs",
-    redoc_url="/api/redoc"
+    redoc_url="/api/redoc",
 )
 
-# CORS middleware
+# -------------------------------------------------------------------
+# Logging
+# -------------------------------------------------------------------
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s - %(message)s",
+)
+
+# -------------------------------------------------------------------
+# Middleware: CORS
+# -------------------------------------------------------------------
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.ALLOWED_ORIGINS,
@@ -35,34 +62,49 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# DB init
+# -------------------------------------------------------------------
+# Database initialization
+# -------------------------------------------------------------------
 @app.on_event("startup")
 def on_startup():
     Base.metadata.create_all(bind=engine)
 
-# Include API routes
-app.include_router(documents_router.router, prefix="/api/v1")
+# -------------------------------------------------------------------
+# API Routes
+# -------------------------------------------------------------------
+documents_router, search_router, health_router = get_routers()
+app.include_router(health_router, prefix="/api/v1")
+app.include_router(documents_router, prefix="/api/v1")
+app.include_router(search_router, prefix="/api/v1")
 
-# Mount static files for uploaded documents
+# -------------------------------------------------------------------
+# Serve uploaded files
+# -------------------------------------------------------------------
 uploads_dir = Path("data/uploads")
 uploads_dir.mkdir(parents=True, exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=str(uploads_dir)), name="uploads")
 
-@app.get("/")
-async def root():
-    """Root endpoint with basic API information"""
-    return {
-        "message": "ChittiGeNN - Offline Multimodal RAG System",
-        "version": "0.1.0",
-        "status": "running",
-        "docs": "/api/docs"
-    }
+# -------------------------------------------------------------------
+# Serve React frontend
+# -------------------------------------------------------------------
+frontend_build = Path(__file__).resolve().parents[1] / "frontend" / "build"
 
+if frontend_build.exists():
+    app.mount("/static", StaticFiles(directory=frontend_build / "static"), name="static")
+
+    @app.get("/{full_path:path}")
+    async def serve_react_app(full_path: str, request: Request):
+        """
+        Serve React app for any route not handled by API.
+        """
+        index_file = frontend_build / "index.html"
+        if index_file.exists():
+            return FileResponse(index_file)
+        return {"error": "Frontend build not found."}
+
+# -------------------------------------------------------------------
+# Entry point for development
+# -------------------------------------------------------------------
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(
-        "main:app",
-        host="0.0.0.0",
-        port=8000,
-        reload=True
-    )
+    uvicorn.run("app.main:app", host="127.0.0.1", port=8000, reload=True)
